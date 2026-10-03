@@ -1,0 +1,1997 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>KhataDesk</title>
+<meta name="description" content="KhataDesk — practice management dashboard for Dilip's CA/GST practice. Works fully offline, no account needed." />
+
+<!-- App icon for browser tab / Android "Add to Home screen" -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 rx=%2218%22 fill=%22%231C2B45%22/><text x=%2250%22 y=%2268%22 font-size=%2258%22 text-anchor=%22middle%22 fill=%22%23F5F1E8%22 font-family=%22Georgia,serif%22>K</text></svg>" />
+
+<!-- Lets a phone offer "Add to Home Screen" with a proper look -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="KhataDesk" />
+<meta name="theme-color" content="#1C2B45" />
+
+<!-- Tailwind (utility classes used throughout the app) -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- React + ReactDOM (production builds) -->
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+
+<!-- Babel standalone: lets this single file use JSX with no build step -->
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<!-- SheetJS, for the "Download Excel" button -->
+<script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+  html, body { margin: 0; padding: 0; background: #F5F1E8; }
+  #root { min-height: 100vh; }
+</style>
+
+<!-- ============================================================
+     CLOUD SYNC CONFIG — paste your free Firebase project's config
+     here to sync data across every device (see SYNC-SETUP.txt for
+     the one-time steps). Leave FIREBASE_CONFIG as null to keep
+     working offline, saved only on this device/browser. -->
+<script>
+  window.FIREBASE_CONFIG = null;
+  // Example once you have one, from Firebase Console -> Project settings -> Your apps:
+  // window.FIREBASE_CONFIG = {
+  //   apiKey: "AIza...",
+  //   authDomain: "your-project.firebaseapp.com",
+  //   projectId: "your-project",
+  //   storageBucket: "your-project.appspot.com",
+  //   messagingSenderId: "...",
+  //   appId: "..."
+  // };
+  window.FIREBASE_SPACE = "khatadesk"; // keep this the same on every device
+</script>
+</head>
+<body>
+<div id="root">
+  <div style="display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:sans-serif;color:#1C2B4599;">
+    Loading KhataDesk…
+  </div>
+</div>
+
+<!-- App source, kept as inert text so the browser never tries to run it
+     directly. The bootstrap script below compiles it with a fixed, classic
+     JSX runtime (React.createElement calls, no ES "import") and runs it. -->
+<script type="text/plain" id="khatadesk-source">
+
+// --- Storage shim with optional Firebase cloud sync -----------------------
+// Always reads/writes localStorage first (so the UI never waits on the
+// network). If window.FIREBASE_CONFIG is set (see the config block near the
+// top of this file), every write is also pushed to a free Firebase
+// Firestore database, and every load pulls the latest value from there
+// first — so the same data shows up on this website from your phone, your
+// laptop, anywhere, no account sign-in needed on the page itself. With no
+// Firebase config set, it just uses this device's local storage only.
+(function () {
+  var space = (window.FIREBASE_SPACE && String(window.FIREBASE_SPACE).trim()) || "default";
+  var dbPromise = null;
+
+  function loadScript(src) {
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement("script");
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+
+  function getDb() {
+    if (!window.FIREBASE_CONFIG) return Promise.resolve(null);
+    if (dbPromise) return dbPromise;
+    dbPromise = loadScript("https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js")
+      .then(function () {
+        return loadScript("https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js");
+      })
+      .then(function () {
+        var app = firebase.initializeApp(window.FIREBASE_CONFIG);
+        return firebase.firestore(app);
+      })
+      .catch(function (e) {
+        console.error("KhataDesk: Firebase failed to load, using local storage only.", e);
+        return null;
+      });
+    return dbPromise;
+  }
+
+  function docRef(db, key) {
+    return db.collection("spaces").doc(space).collection("khatadesk").doc(key);
+  }
+
+  window.KhataDeskSync = {
+    isAvailable: async () => !!(await getDb()),
+  };
+
+  window.storage = {
+    get: async (key) => {
+      const db = await getDb();
+      if (db) {
+        try {
+          const snap = await docRef(db, key).get();
+          if (snap.exists) {
+            const data = snap.data();
+            if (data && typeof data.value === "string") {
+              try { localStorage.setItem(key, data.value); } catch (e) {}
+              return { value: data.value };
+            }
+          }
+        } catch (e) {
+          // fall through to the local copy below
+        }
+      }
+      try {
+        const v = localStorage.getItem(key);
+        return v === null ? null : { value: v };
+      } catch (e) { return null; }
+    },
+    set: async (key, value) => {
+      try { localStorage.setItem(key, value); } catch (e) {}
+      const db = await getDb();
+      if (db) {
+        try { await docRef(db, key).set({ value: value, updated: Date.now() }); } catch (e) {}
+      }
+    },
+  };
+})();
+
+const { useState, useEffect, useMemo, useRef } = React;
+// Minimal inline icon set, matching lucide's stroke style, so this file has
+// zero npm dependency on lucide-react. Each icon takes {size, color, className}.
+const { createElement: h } = React;
+
+function Icon(paths, viewBox = "0 0 24 24") {
+  return function IconComp({ size = 20, color = "currentColor", className, title }) {
+    return h(
+      "svg",
+      {
+        width: size,
+        height: size,
+        viewBox,
+        fill: "none",
+        stroke: color,
+        strokeWidth: 2,
+        strokeLinecap: "round",
+        strokeLinejoin: "round",
+        className,
+      },
+      title ? h("title", null, title) : null,
+      ...paths
+    );
+  };
+}
+
+const Bell = Icon([
+  h("path", { key: 1, d: "M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" }),
+  h("path", { key: 2, d: "M10.3 21a1.94 1.94 0 0 0 3.4 0" }),
+]);
+
+const CheckCircle2 = Icon([
+  h("path", { key: 1, d: "M22 11.08V12a10 10 0 1 1-5.93-9.14" }),
+  h("polyline", { key: 2, points: "22 4 12 14.01 9 11.01" }),
+]);
+
+const Circle = Icon([h("circle", { key: 1, cx: 12, cy: 12, r: 10 })]);
+
+const Mail = Icon([
+  h("rect", { key: 1, x: 2, y: 4, width: 20, height: 16, rx: 2 }),
+  h("path", { key: 2, d: "m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" }),
+]);
+
+const FileSpreadsheet = Icon([
+  h("path", { key: 1, d: "M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" }),
+  h("path", { key: 2, d: "M14 2v4a2 2 0 0 0 2 2h4" }),
+  h("path", { key: 3, d: "M8 13h8" }),
+  h("path", { key: 4, d: "M8 17h8" }),
+  h("path", { key: 5, d: "M8 9h1" }),
+]);
+
+const Database = Icon([
+  h("ellipse", { key: 1, cx: 12, cy: 5, rx: 9, ry: 3 }),
+  h("path", { key: 2, d: "M3 5v14a9 3 0 0 0 18 0V5" }),
+  h("path", { key: 3, d: "M3 12a9 3 0 0 0 18 0" }),
+]);
+
+const RefreshCw = Icon([
+  h("path", { key: 1, d: "M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" }),
+  h("path", { key: 2, d: "M3 3v5h5" }),
+  h("path", { key: 3, d: "M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" }),
+  h("path", { key: 4, d: "M16 16h5v5" }),
+]);
+
+const Plus = Icon([
+  h("path", { key: 1, d: "M5 12h14" }),
+  h("path", { key: 2, d: "M12 5v14" }),
+]);
+
+const AlertTriangle = Icon([
+  h("path", { key: 1, d: "m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" }),
+  h("path", { key: 2, d: "M12 9v4" }),
+  h("path", { key: 3, d: "M12 17h.01" }),
+]);
+
+const Clock = Icon([
+  h("circle", { key: 1, cx: 12, cy: 12, r: 10 }),
+  h("polyline", { key: 2, points: "12 6 12 12 16 14" }),
+]);
+
+const X = Icon([
+  h("path", { key: 1, d: "M18 6 6 18" }),
+  h("path", { key: 2, d: "m6 6 12 12" }),
+]);
+
+const Stamp = Icon([
+  h("path", { key: 1, d: "m5 22 14 0" }),
+  h("path", { key: 2, d: "M12 2a4 4 0 0 1 4 4c0 1.5-1 3-2 4" }),
+  h("path", { key: 3, d: "M10 10c-1 1-2 2.5-2 4a4 4 0 0 0 8 0c0-1.5-1-3-2-4" }),
+  h("path", { key: 4, d: "M8 22v-4a4 4 0 0 1 8 0v4" }),
+]);
+
+const ChevronRight = Icon([h("path", { key: 1, d: "m9 18 6-6-6-6" })]);
+
+const Users = Icon([
+  h("path", { key: 1, d: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" }),
+  h("circle", { key: 2, cx: 9, cy: 7, r: 4 }),
+  h("path", { key: 3, d: "M22 21v-2a4 4 0 0 0-3-3.87" }),
+  h("path", { key: 4, d: "M16 3.13a4 4 0 0 1 0 7.75" }),
+]);
+
+const Phone = Icon([
+  h("path", { key: 1, d: "M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92Z" }),
+]);
+
+const Trash2 = Icon([
+  h("path", { key: 1, d: "M3 6h18" }),
+  h("path", { key: 2, d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" }),
+  h("path", { key: 3, d: "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }),
+  h("line", { key: 4, x1: 10, y1: 11, x2: 10, y2: 17 }),
+  h("line", { key: 5, x1: 14, y1: 11, x2: 14, y2: 17 }),
+]);
+
+const Download = Icon([
+  h("path", { key: 1, d: "M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" }),
+  h("polyline", { key: 2, points: "7 10 12 15 17 10" }),
+  h("line", { key: 3, x1: 12, y1: 15, x2: 12, y2: 3 }),
+]);
+
+const Send = Icon([
+  h("path", { key: 1, d: "m22 2-7 20-4-9-9-4Z" }),
+  h("path", { key: 2, d: "M22 2 11 13" }),
+]);
+
+const MessageSquare = Icon([
+  h("path", { key: 1, d: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" }),
+]);
+
+const Mic = Icon([
+  h("path", { key: 1, d: "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" }),
+  h("path", { key: 2, d: "M19 10v2a7 7 0 0 1-14 0v-2" }),
+  h("line", { key: 3, x1: 12, y1: 19, x2: 12, y2: 22 }),
+]);
+
+const MicOff = Icon([
+  h("line", { key: 1, x1: 2, y1: 2, x2: 22, y2: 22 }),
+  h("path", { key: 2, d: "M18.89 13.23A7.12 7.12 0 0 0 19 12v-2" }),
+  h("path", { key: 3, d: "M5 10v2a7 7 0 0 0 12 5" }),
+  h("path", { key: 4, d: "M15 9.34V5a3 3 0 0 0-5.68-1.33" }),
+  h("path", { key: 5, d: "M9 9v3a3 3 0 0 0 5.12 2.12" }),
+  h("line", { key: 6, x1: 12, y1: 19, x2: 12, y2: 22 }),
+]);
+
+const MapPin = Icon([
+  h("path", { key: 1, d: "M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" }),
+  h("circle", { key: 2, cx: 12, cy: 10, r: 3 }),
+]);
+
+const Pencil = Icon([
+  h("path", { key: 1, d: "M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" }),
+]);
+
+const Save = Icon([
+  h("path", { key: 1, d: "M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" }),
+  h("polyline", { key: 2, points: "17 21 17 13 7 13 7 21" }),
+  h("polyline", { key: 3, points: "7 3 7 8 15 8" }),
+]);
+
+// ---------- sample data (stand-in for real client/returns data) ----------
+const today = new Date();
+const d = (offsetDays) => {
+  const t = new Date(today);
+  t.setDate(t.getDate() + offsetDays);
+  return t;
+};
+const fmt = (date) =>
+  date.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+
+const initialReturns = [
+  { id: "r1", client: "Anand Traders", type: "GSTR-3B", period: "Jul 2026", due: d(-3), status: "Pending" },
+  { id: "r2", client: "Anand Traders", type: "GSTR-1", period: "Jul 2026", due: d(-1), status: "Pending" },
+  { id: "r3", client: "Sundar Textiles", type: "TDS 26Q", period: "Q1 FY26-27", due: d(2), status: "Pending" },
+  { id: "r4", client: "Meera Exports Pvt Ltd", type: "GSTR-3B", period: "Jul 2026", due: d(2), status: "Pending" },
+  { id: "r5", client: "Rao & Sons", type: "ITR-4", period: "AY 2026-27", due: d(5), status: "Pending" },
+  { id: "r6", client: "Krishna Pharma Distributors", type: "GSTR-1", period: "Aug 2026", due: d(9), status: "Pending" },
+  { id: "r7", client: "Sundar Textiles", type: "GSTR-3B", period: "Jul 2026", due: d(-4), status: "Filed" },
+  { id: "r8", client: "Nair Constructions", type: "TDS 24Q", period: "Q1 FY26-27", due: d(11), status: "Pending" },
+  { id: "r9", client: "Meera Exports Pvt Ltd", type: "GSTR-1", period: "Jul 2026", due: d(-6), status: "Filed" },
+  { id: "r10", client: "Rao & Sons", type: "GSTR-3B", period: "Jul 2026", due: d(1), status: "Pending" },
+];
+
+const initialTasks = [
+  { id: "t1", title: "Bank reconciliation — Anand Traders (HDFC)", client: "Anand Traders", due: d(0), done: false },
+  { id: "t2", title: "Enter purchase invoices from Tally export", client: "Meera Exports Pvt Ltd", due: d(0), done: false },
+  { id: "t3", title: "Match sales register with e-invoice portal", client: "Sundar Textiles", due: d(1), done: false },
+  { id: "t4", title: "Follow up: pending Form 16A from client", client: "Nair Constructions", due: d(-1), done: false },
+  { id: "t5", title: "Ledger scrutiny — sundry debtors", client: "Rao & Sons", due: d(2), done: true },
+];
+
+// no sample clients — this list is entered for real by the user
+const initialClients = [];
+
+function monthKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+function quarterKey(date) {
+  const q = Math.floor(date.getMonth() / 3) + 1;
+  return `${date.getFullYear()}-Q${q}`;
+}
+function monthLabel(date) {
+  return date.toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+}
+function quarterLabel(date) {
+  const q = Math.floor(date.getMonth() / 3) + 1;
+  return `Q${q} ${date.getFullYear()}`;
+}
+
+function visitTargetLabel(count, per) {
+  if (per === "days") return `every ${count} days`;
+  return `${count}x / ${per}`;
+}
+
+const typeColors = {
+  "GSTR-3B": "#2F6B4F",
+  "GSTR-1": "#2F6B4F",
+  "GSTR-9": "#2F6B4F",
+  "GSTR-9C": "#2F6B4F",
+  "TDS 26Q": "#B8892B",
+  "TDS 24Q": "#B8892B",
+  "ITR-1": "#1C2B45",
+  "ITR-2": "#1C2B45",
+  "ITR-3": "#1C2B45",
+  "ITR-4": "#1C2B45",
+  "ITR-5": "#1C2B45",
+  "ITR-6": "#1C2B45",
+  "ITR-7": "#1C2B45",
+};
+
+function daysLeft(due) {
+  const ms = new Date(due).setHours(0, 0, 0, 0) - new Date(today).setHours(0, 0, 0, 0);
+  return Math.round(ms / (1000 * 60 * 60 * 24));
+}
+
+function Stamp_({ children, tone }) {
+  const tones = {
+    overdue: { border: "#A63D2F", text: "#A63D2F" },
+    soon: { border: "#B8892B", text: "#B8892B" },
+    filed: { border: "#2F6B4F", text: "#2F6B4F" },
+    normal: { border: "#1C2B45", text: "#1C2B45" },
+  };
+  const c = tones[tone];
+  return (
+    <span
+      className="inline-block -rotate-6 select-none"
+      style={{
+        border: `2px dashed ${c.border}`,
+        color: c.text,
+        fontFamily: "'IBM Plex Mono', monospace",
+        fontSize: "10px",
+        fontWeight: 600,
+        letterSpacing: "0.08em",
+        padding: "2px 8px",
+        borderRadius: "3px",
+        textTransform: "uppercase",
+        background: "rgba(250,247,240,0.6)",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function StatusStamp({ status, due }) {
+  if (status === "Filed") return <Stamp_ tone="filed">Filed</Stamp_>;
+  const dl = daysLeft(due);
+  if (dl < 0) return <Stamp_ tone="overdue">{Math.abs(dl)}d overdue</Stamp_>;
+  if (dl <= 3) return <Stamp_ tone="soon">Due in {dl}d</Stamp_>;
+  return <Stamp_ tone="normal">Due in {dl}d</Stamp_>;
+}
+
+function KhataDesk() {
+  const [returns, setReturns] = useState(initialReturns);
+  const [tasks, setTasks] = useState(initialTasks);
+  const [clients, setClients] = useState(initialClients);
+  const [checkins, setCheckins] = useState({ monthly: {}, quarterly: {} });
+  const [notes, setNotes] = useState([]);
+  const [visits, setVisits] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [saveError, setSaveError] = useState(false);
+  const [tab, setTab] = useState("today");
+  const [checkinMode, setCheckinMode] = useState("monthly");
+  const [showAddClient, setShowAddClient] = useState(false);
+  const [clientSavedMsg, setClientSavedMsg] = useState("");
+  const [editingClientId, setEditingClientId] = useState(null);
+  const [editClientDraft, setEditClientDraft] = useState(null);
+  const [newClient, setNewClient] = useState({ name: "", gstin: "", pan: "", mobile: "", email: "", visitCount: 1, visitPer: "month" });
+  const [noteDraft, setNoteDraft] = useState({});
+  const [editingNoteId, setEditingNoteId] = useState(null);
+  const [editNoteDraft, setEditNoteDraft] = useState("");
+  const [visitDraft, setVisitDraft] = useState({ clientId: "", date: "", note: "" });
+  const [editingVisitId, setEditingVisitId] = useState(null);
+  const [editVisitDraft, setEditVisitDraft] = useState(null);
+  const [recording, setRecording] = useState(false);
+  const [micUnavailable, setMicUnavailable] = useState(false);
+  const recognitionRef = useRef(null);
+  const [filterType, setFilterType] = useState("All");
+  const [showAddTask, setShowAddTask] = useState(false);
+  const [editingTaskId, setEditingTaskId] = useState(null);
+  const [editTaskDraft, setEditTaskDraft] = useState(null);
+  const [showAddReturn, setShowAddReturn] = useState(false);
+  const [editingReturnId, setEditingReturnId] = useState(null);
+  const [editReturnDraft, setEditReturnDraft] = useState(null);
+  const [newTask, setNewTask] = useState({ title: "", client: "" });
+  const [newReturn, setNewReturn] = useState({ client: "", type: "GSTR-3B", period: "", due: "", filedBy: "", verifiedBy: "" });
+  const [connections, setConnections] = useState({
+    mail: { connected: true, last: "2 min ago", syncing: false },
+    excel: { connected: true, last: "Yesterday, 6:40 PM", syncing: false },
+    tally: { connected: true, last: "10 min ago", syncing: false },
+  });
+
+  // load previously saved data once on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.storage.get("khatadesk:returns");
+        if (r && r.value) setReturns(JSON.parse(r.value));
+      } catch (e) { /* no saved returns yet, keep sample data */ }
+      try {
+        const t = await window.storage.get("khatadesk:tasks");
+        if (t && t.value) setTasks(JSON.parse(t.value));
+      } catch (e) { /* no saved tasks yet, keep sample data */ }
+      try {
+        const c = await window.storage.get("khatadesk:clients");
+        if (c && c.value) setClients(JSON.parse(c.value));
+      } catch (e) { /* no saved clients yet */ }
+      try {
+        const ci = await window.storage.get("khatadesk:checkins");
+        if (ci && ci.value) setCheckins(JSON.parse(ci.value));
+      } catch (e) { /* no saved check-ins yet */ }
+      try {
+        const n = await window.storage.get("khatadesk:notes");
+        if (n && n.value) setNotes(JSON.parse(n.value));
+      } catch (e) { /* no saved notes yet */ }
+      try {
+        const v = await window.storage.get("khatadesk:visits");
+        if (v && v.value) setVisits(JSON.parse(v.value));
+      } catch (e) { /* no saved visits yet */ }
+      setLoaded(true);
+    })();
+  }, []);
+
+  // persist whenever data changes, after initial load
+  useEffect(() => {
+    if (!loaded) return;
+    window.storage.set("khatadesk:returns", JSON.stringify(returns)).catch(() => setSaveError(true));
+  }, [returns, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    window.storage.set("khatadesk:tasks", JSON.stringify(tasks)).catch(() => setSaveError(true));
+  }, [tasks, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    window.storage.set("khatadesk:clients", JSON.stringify(clients)).catch(() => setSaveError(true));
+  }, [clients, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    window.storage.set("khatadesk:checkins", JSON.stringify(checkins)).catch(() => setSaveError(true));
+  }, [checkins, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    window.storage.set("khatadesk:notes", JSON.stringify(notes)).catch(() => setSaveError(true));
+  }, [notes, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    window.storage.set("khatadesk:visits", JSON.stringify(visits)).catch(() => setSaveError(true));
+  }, [visits, loaded]);
+
+  const stats = useMemo(() => {
+    const pending = returns.filter((r) => r.status === "Pending");
+    const overdue = pending.filter((r) => daysLeft(r.due) < 0).length;
+    const dueSoon = pending.filter((r) => daysLeft(r.due) >= 0 && daysLeft(r.due) <= 3).length;
+    const filedThisMonth = returns.filter((r) => r.status === "Filed").length;
+    const clientCount = clients.length > 0 ? clients.length : new Set(returns.map((r) => r.client)).size;
+    return { overdue, dueSoon, filedThisMonth, clients: clientCount };
+  }, [returns, clients]);
+
+  const sortedReturns = useMemo(() => {
+    let list = [...returns];
+    if (filterType !== "All") list = list.filter((r) => r.type === filterType);
+    return list.sort((a, b) => new Date(a.due) - new Date(b.due));
+  }, [returns, filterType]);
+
+  const toggleTask = (id) =>
+    setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
+
+  const deleteTask = (id) => {
+    const t = tasks.find((tk) => tk.id === id);
+    if (!t) return;
+    const ok = window.confirm(`Delete task "${t.title}"? This cannot be undone.`);
+    if (!ok) return;
+    setTasks((ts) => ts.filter((tk) => tk.id !== id));
+    if (editingTaskId === id) {
+      setEditingTaskId(null);
+      setEditTaskDraft(null);
+    }
+  };
+
+  const startEditTask = (t) => {
+    setEditingTaskId(t.id);
+    setEditTaskDraft({ title: t.title || "", client: t.client || "" });
+    setShowAddTask(false);
+  };
+
+  const cancelEditTask = () => {
+    setEditingTaskId(null);
+    setEditTaskDraft(null);
+  };
+
+  const saveEditTask = () => {
+    if (!editTaskDraft || !editTaskDraft.title.trim()) return;
+    setTasks((ts) =>
+      ts.map((t) =>
+        t.id === editingTaskId
+          ? { ...t, title: editTaskDraft.title.trim(), client: editTaskDraft.client.trim() || "General" }
+          : t
+      )
+    );
+    setEditingTaskId(null);
+    setEditTaskDraft(null);
+  };
+
+  const toggleReturnStatus = (id) =>
+    setReturns((rs) =>
+      rs.map((r) => (r.id === id ? { ...r, status: r.status === "Filed" ? "Pending" : "Filed" } : r))
+    );
+
+  const addTask = () => {
+    if (!newTask.title.trim()) return;
+    setTasks((ts) => [
+      { id: "t" + Date.now(), title: newTask.title, client: newTask.client || "General", due: d(0), done: false },
+      ...ts,
+    ]);
+    setNewTask({ title: "", client: "" });
+    setShowAddTask(false);
+  };
+
+  const addReturn = () => {
+    if (!newReturn.client.trim() || !newReturn.due) return;
+    setReturns((rs) => [
+      {
+        id: "r" + Date.now(),
+        client: newReturn.client,
+        type: newReturn.type,
+        period: newReturn.period || "—",
+        due: new Date(newReturn.due),
+        status: "Pending",
+        filedBy: newReturn.filedBy.trim().toUpperCase(),
+        verifiedBy: newReturn.verifiedBy.trim().toUpperCase(),
+      },
+      ...rs,
+    ]);
+    setNewReturn({ client: "", type: "GSTR-3B", period: "", due: "", filedBy: "", verifiedBy: "" });
+    setShowAddReturn(false);
+  };
+
+  const deleteReturn = (id) => {
+    const r = returns.find((rt) => rt.id === id);
+    if (!r) return;
+    const ok = window.confirm(`Delete return "${r.type}" for "${r.client}"? This cannot be undone.`);
+    if (!ok) return;
+    setReturns((rs) => rs.filter((rt) => rt.id !== id));
+    if (editingReturnId === id) {
+      setEditingReturnId(null);
+      setEditReturnDraft(null);
+    }
+  };
+
+  const startEditReturn = (r) => {
+    setEditingReturnId(r.id);
+    setEditReturnDraft({
+      client: r.client || "",
+      type: r.type || "GSTR-3B",
+      period: r.period || "",
+      due: r.due ? new Date(r.due).toISOString().slice(0, 10) : "",
+      filedBy: r.filedBy || "",
+      verifiedBy: r.verifiedBy || "",
+    });
+    setShowAddReturn(false);
+  };
+
+  const cancelEditReturn = () => {
+    setEditingReturnId(null);
+    setEditReturnDraft(null);
+  };
+
+  const saveEditReturn = () => {
+    if (!editReturnDraft || !editReturnDraft.client.trim() || !editReturnDraft.due) return;
+    setReturns((rs) =>
+      rs.map((r) =>
+        r.id === editingReturnId
+          ? {
+              ...r,
+              client: editReturnDraft.client.trim(),
+              type: editReturnDraft.type,
+              period: editReturnDraft.period.trim() || "—",
+              due: new Date(editReturnDraft.due),
+              filedBy: editReturnDraft.filedBy.trim().toUpperCase(),
+              verifiedBy: editReturnDraft.verifiedBy.trim().toUpperCase(),
+            }
+          : r
+      )
+    );
+    setEditingReturnId(null);
+    setEditReturnDraft(null);
+  };
+
+  const addClient = () => {
+    if (!newClient.name.trim()) return;
+    const savedName = newClient.name.trim();
+    setClients((cs) => [
+      {
+        id: "c" + Date.now(),
+        name: savedName,
+        gstin: newClient.gstin.trim().toUpperCase(),
+        pan: newClient.pan.trim().toUpperCase(),
+        mobile: newClient.mobile.trim(),
+        email: newClient.email.trim(),
+        visitCount: Number(newClient.visitCount) || 1,
+        visitPer: newClient.visitPer,
+      },
+      ...cs,
+    ]);
+    setNewClient({ name: "", gstin: "", pan: "", mobile: "", email: "", visitCount: 1, visitPer: "month" });
+    setShowAddClient(false);
+    setClientSavedMsg(`"${savedName}" added successfully ✓`);
+    setTimeout(() => setClientSavedMsg(""), 4000);
+  };
+
+  const updateVisitTarget = (clientId, count, per) =>
+    setClients((cs) => cs.map((c) => (c.id === clientId ? { ...c, visitCount: count, visitPer: per } : c)));
+
+  const logVisit = () => {
+    const client = clients.find((c) => c.id === visitDraft.clientId);
+    if (!client || !visitDraft.note.trim()) return;
+    setVisits((vs) => [
+      {
+        id: "v" + Date.now(),
+        clientId: client.id,
+        clientName: client.name,
+        date: visitDraft.date || new Date().toISOString(),
+        note: visitDraft.note.trim(),
+      },
+      ...vs,
+    ]);
+    setVisitDraft({ clientId: "", date: "", note: "" });
+    stopRecording();
+  };
+
+  const deleteVisit = (id) => {
+    const v = visits.find((vv) => vv.id === id);
+    if (!v) return;
+    const ok = window.confirm(`Delete this visit note for "${v.clientName}"? This cannot be undone.`);
+    if (!ok) return;
+    setVisits((vs) => vs.filter((vv) => vv.id !== id));
+    if (editingVisitId === id) {
+      setEditingVisitId(null);
+      setEditVisitDraft(null);
+    }
+  };
+
+  const startEditVisit = (v) => {
+    setEditingVisitId(v.id);
+    setEditVisitDraft({ date: v.date ? new Date(v.date).toISOString().slice(0, 10) : "", note: v.note || "" });
+  };
+
+  const cancelEditVisit = () => {
+    setEditingVisitId(null);
+    setEditVisitDraft(null);
+  };
+
+  const saveEditVisit = () => {
+    if (!editVisitDraft || !editVisitDraft.note.trim()) return;
+    setVisits((vs) =>
+      vs.map((v) =>
+        v.id === editingVisitId
+          ? { ...v, date: editVisitDraft.date || v.date, note: editVisitDraft.note.trim() }
+          : v
+      )
+    );
+    setEditingVisitId(null);
+    setEditVisitDraft(null);
+  };
+
+  const startRecording = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      setMicUnavailable(true);
+      return;
+    }
+    try {
+      const recog = new SR();
+      recog.continuous = true;
+      recog.interimResults = false;
+      recog.lang = "en-IN";
+      recog.onresult = (e) => {
+        let transcript = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) transcript += e.results[i][0].transcript;
+        setVisitDraft((v) => ({ ...v, note: (v.note ? v.note + " " : "") + transcript }));
+      };
+      recog.onerror = () => setMicUnavailable(true);
+      recog.onend = () => setRecording(false);
+      recognitionRef.current = recog;
+      recog.start();
+      setRecording(true);
+    } catch (e) {
+      setMicUnavailable(true);
+    }
+  };
+
+  const stopRecording = () => {
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch (e) {}
+    }
+    setRecording(false);
+  };
+
+  const visitsThisMonth = (clientId) =>
+    visits.filter((v) => v.clientId === clientId && monthKey(new Date(v.date)) === monthKey(today)).length;
+  const visitsThisYear = (clientId) =>
+    visits.filter((v) => v.clientId === clientId && new Date(v.date).getFullYear() === today.getFullYear()).length;
+
+  const targetForPeriod = (c) => {
+    if (c.visitPer === "month") return { monthTarget: c.visitCount, yearTarget: c.visitCount * 12 };
+    if (c.visitPer === "days") {
+      const monthTarget = Math.max(1, Math.round(30 / c.visitCount));
+      const yearTarget = Math.max(1, Math.round(365 / c.visitCount));
+      return { monthTarget, yearTarget };
+    }
+    return { monthTarget: null, yearTarget: c.visitCount };
+  };
+
+  const deleteClient = (id) => {
+    const c = clients.find((cl) => cl.id === id);
+    if (!c) return;
+    const ok = window.confirm(`Delete client "${c.name}"? This cannot be undone.`);
+    if (!ok) return;
+    setClients((cs) => cs.filter((cl) => cl.id !== id));
+    if (editingClientId === id) {
+      setEditingClientId(null);
+      setEditClientDraft(null);
+    }
+    setClientSavedMsg(`"${c.name}" deleted`);
+    setTimeout(() => setClientSavedMsg(""), 4000);
+  };
+
+  const startEditClient = (c) => {
+    setEditingClientId(c.id);
+    setEditClientDraft({
+      name: c.name || "",
+      gstin: c.gstin || "",
+      pan: c.pan || "",
+      mobile: c.mobile || "",
+      email: c.email || "",
+      visitCount: c.visitCount || 1,
+      visitPer: c.visitPer || "month",
+    });
+    setShowAddClient(false);
+  };
+
+  const cancelEditClient = () => {
+    setEditingClientId(null);
+    setEditClientDraft(null);
+  };
+
+  const saveEditClient = () => {
+    if (!editClientDraft || !editClientDraft.name.trim()) return;
+    const updatedName = editClientDraft.name.trim();
+    setClients((cs) =>
+      cs.map((c) =>
+        c.id === editingClientId
+          ? {
+              ...c,
+              name: updatedName,
+              gstin: (editClientDraft.gstin || "").trim().toUpperCase(),
+              pan: (editClientDraft.pan || "").trim().toUpperCase(),
+              mobile: (editClientDraft.mobile || "").trim(),
+              email: (editClientDraft.email || "").trim(),
+              visitCount: Number(editClientDraft.visitCount) || 1,
+              visitPer: editClientDraft.visitPer || "month",
+            }
+          : c
+      )
+    );
+    setEditingClientId(null);
+    setEditClientDraft(null);
+    setClientSavedMsg(`"${updatedName}" updated successfully ✓`);
+    setTimeout(() => setClientSavedMsg(""), 4000);
+  };
+
+  const addNote = (client) => {
+    const text = (noteDraft[client.id] || "").trim();
+    if (!text) return;
+    setNotes((ns) => [
+      { id: "n" + Date.now(), clientId: client.id, clientName: client.name, note: text, date: new Date().toISOString() },
+      ...ns,
+    ]);
+    setNoteDraft((d0) => ({ ...d0, [client.id]: "" }));
+  };
+
+  const deleteNote = (id) => {
+    const n = notes.find((nt) => nt.id === id);
+    if (!n) return;
+    const ok = window.confirm(`Delete this note for "${n.clientName}"? This cannot be undone.`);
+    if (!ok) return;
+    setNotes((ns) => ns.filter((nt) => nt.id !== id));
+    if (editingNoteId === id) {
+      setEditingNoteId(null);
+      setEditNoteDraft("");
+    }
+  };
+
+  const startEditNote = (n) => {
+    setEditingNoteId(n.id);
+    setEditNoteDraft(n.note || "");
+  };
+
+  const cancelEditNote = () => {
+    setEditingNoteId(null);
+    setEditNoteDraft("");
+  };
+
+  const saveEditNote = () => {
+    if (!editNoteDraft.trim()) return;
+    setNotes((ns) => ns.map((n) => (n.id === editingNoteId ? { ...n, note: editNoteDraft.trim() } : n)));
+    setEditingNoteId(null);
+    setEditNoteDraft("");
+  };
+
+  const downloadExcel = () => {
+    const clientRows = clients.map((c) => ({
+      "Client Name": c.name,
+      GSTIN: c.gstin,
+      PAN: c.pan,
+      Mobile: c.mobile,
+      Email: c.email,
+    }));
+    const noteRows = notes.map((n) => ({
+      Client: n.clientName,
+      Date: fmt(new Date(n.date)),
+      "Issue discussed": n.note,
+    }));
+    const visitRows = visits.map((v) => ({
+      Client: v.clientName,
+      Date: fmt(new Date(v.date)),
+      "Visit notes": v.note,
+    }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(clientRows.length ? clientRows : [{ "Client Name": "" }]),
+      "Clients"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(noteRows.length ? noteRows : [{ Client: "", Date: "", "Issue discussed": "" }]),
+      "Discussion Log"
+    );
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(visitRows.length ? visitRows : [{ Client: "", Date: "", "Visit notes": "" }]),
+      "Site Visits"
+    );
+    XLSX.writeFile(wb, `khatadesk-clients-${monthKey(today)}.xlsx`);
+  };
+
+  const mailtoLink = (c) =>
+    `mailto:${c.email}?subject=${encodeURIComponent(c.name + " — from your accountant")}`;
+
+  const curMonthKey = monthKey(today);
+  const curQuarterKey = quarterKey(today);
+
+  const toggleCheckin = (clientId) => {
+    const key = checkinMode === "monthly" ? curMonthKey : curQuarterKey;
+    setCheckins((ci) => {
+      const bucket = { ...(ci[checkinMode][key] || {}) };
+      bucket[clientId] = !bucket[clientId];
+      return { ...ci, [checkinMode]: { ...ci[checkinMode], [key]: bucket } };
+    });
+  };
+
+  const currentTicks =
+    (checkinMode === "monthly" ? checkins.monthly[curMonthKey] : checkins.quarterly[curQuarterKey]) || {};
+  const remainingClients = clients.filter((c) => !currentTicks[c.id]);
+
+  const sync = (key) => {
+    setConnections((c) => ({ ...c, [key]: { ...c[key], syncing: true } }));
+    setTimeout(() => {
+      setConnections((c) => ({
+        ...c,
+        [key]: { ...c[key], syncing: false, last: "Just now" },
+      }));
+    }, 1200);
+  };
+
+  const types = ["All", ...Array.from(new Set(returns.map((r) => r.type)))];
+
+  const allClientNames = useMemo(() => {
+    const names = new Set(clients.map((c) => c.name));
+    returns.forEach((r) => names.add(r.client));
+    tasks.forEach((t) => t.client && names.add(t.client));
+    return Array.from(names).filter(Boolean).sort();
+  }, [clients, returns, tasks]);
+
+  const staffCodes = useMemo(() => {
+    const codes = new Set(["KS", "DD"]);
+    returns.forEach((r) => {
+      if (r.filedBy) codes.add(r.filedBy);
+      if (r.verifiedBy) codes.add(r.verifiedBy);
+    });
+    return Array.from(codes).filter(Boolean).sort();
+  }, [returns]);
+
+  return (
+    <div
+      className="min-h-screen w-full"
+      style={{ background: "#F5F1E8", color: "#1C2B45", fontFamily: "'Inter', sans-serif" }}
+    >
+      <datalist id="known-client-names">
+        {allClientNames.map((name) => (
+          <option key={name} value={name} />
+        ))}
+      </datalist>
+      <datalist id="known-staff-codes">
+        {staffCodes.map((code) => (
+          <option key={code} value={code} />
+        ))}
+      </datalist>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+        .disp { font-family: 'Fraunces', serif; }
+        .mono { font-family: 'IBM Plex Mono', monospace; }
+        .ledger-row { border-left: 3px dashed #A63D2F33; }
+        ::selection { background: #B8892B55; }
+      `}</style>
+
+      {/* header */}
+      <header className="border-b" style={{ borderColor: "#1C2B4522", background: "#F5F1E8" }}>
+        <div className="max-w-5xl mx-auto px-5 py-5 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div
+              className="w-10 h-10 rounded-full flex items-center justify-center -rotate-6"
+              style={{ border: "2px dashed #1C2B45" }}
+            >
+              <Stamp size={18} />
+            </div>
+            <div>
+              <h1 className="disp text-2xl font-semibold leading-none">KhataDesk</h1>
+              <p className="text-xs mono mt-1" style={{ color: "#1C2B4599" }}>
+                {today.toLocaleDateString("en-IN", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })}
+              </p>
+              <p className="text-[10px] mono mt-0.5" style={{ color: "#1C2B4560" }}>v1.1</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs mono hidden sm:inline" style={{ color: saveError ? "#A63D2F" : "#2F6B4F" }}>
+              {saveError ? "● not saved" : loaded ? "● synced" : "● loading"}
+            </span>
+            <div className="flex items-center gap-1 text-xs mono px-3 py-1.5 rounded-full" style={{ background: "#1C2B45", color: "#F5F1E8" }}>
+              <Bell size={12} />
+              {stats.overdue + stats.dueSoon} need attention
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-5xl mx-auto px-5 py-6 pb-16">
+        {/* stat cards */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-8">
+          {[
+            { label: "Overdue returns", value: stats.overdue, color: "#A63D2F" },
+            { label: "Due within 3 days", value: stats.dueSoon, color: "#B8892B" },
+            { label: "Filed this cycle", value: stats.filedThisMonth, color: "#2F6B4F" },
+            { label: "Active clients", value: stats.clients, color: "#1C2B45" },
+          ].map((s) => (
+            <div key={s.label} className="rounded-lg p-4" style={{ background: "#FFFDF8", border: "1px solid #1C2B4518" }}>
+              <div className="mono text-3xl font-semibold" style={{ color: s.color }}>{s.value}</div>
+              <div className="text-xs mt-1" style={{ color: "#1C2B4599" }}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* tabs */}
+        <div className="flex gap-1 mb-5 overflow-x-auto pb-1">
+          {[
+            { key: "today", label: "Today's Work" },
+            { key: "returns", label: "Returns Calendar" },
+            { key: "visits", label: "Site Visits" },
+            { key: "checkins", label: "Client Check-ins" },
+            { key: "clients", label: "Clients" },
+            { key: "connections", label: "Connections" },
+          ].map((tb) => (
+            <button
+              key={tb.key}
+              onClick={() => setTab(tb.key)}
+              className="px-4 py-2 text-sm font-medium rounded-md whitespace-nowrap transition-colors"
+              style={
+                tab === tb.key
+                  ? { background: "#1C2B45", color: "#F5F1E8" }
+                  : { background: "transparent", color: "#1C2B4599" }
+              }
+            >
+              {tb.label}
+            </button>
+          ))}
+        </div>
+
+        {/* TODAY'S WORK */}
+        {tab === "today" && (
+          <section>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="disp text-lg font-semibold">Day-to-day tasks</h2>
+              <button
+                onClick={() => setShowAddTask((v) => !v)}
+                className="flex items-center gap-1 text-xs mono px-3 py-1.5 rounded-full"
+                style={{ background: "#2F6B4F", color: "#F5F1E8" }}
+              >
+                <Plus size={12} /> Add task
+              </button>
+            </div>
+
+            {showAddTask && (
+              <div className="mb-4 p-4 rounded-lg flex flex-col sm:flex-row gap-2" style={{ background: "#FFFDF8", border: "1px solid #1C2B4518" }}>
+                <input
+                  placeholder="Task description"
+                  value={newTask.title}
+                  onChange={(e) => setNewTask({ ...newTask, title: e.target.value })}
+                  className="flex-1 px-3 py-2 rounded text-sm outline-none"
+                  style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                />
+                <input
+                  placeholder="Client (optional)"
+                  value={newTask.client}
+                  onChange={(e) => setNewTask({ ...newTask, client: e.target.value })}
+                  list="known-client-names"
+                  className="sm:w-48 px-3 py-2 rounded text-sm outline-none"
+                  style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                />
+                <button onClick={addTask} className="px-4 py-2 rounded text-sm font-medium" style={{ background: "#1C2B45", color: "#F5F1E8" }}>
+                  Save
+                </button>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              {tasks.map((t) =>
+                editingTaskId === t.id ? (
+                  <div key={t.id} className="p-4 rounded-lg flex flex-col sm:flex-row gap-2" style={{ background: "#FFFDF8", border: "2px solid #B8892B" }}>
+                    <input
+                      placeholder="Task description"
+                      value={editTaskDraft.title}
+                      onChange={(e) => setEditTaskDraft({ ...editTaskDraft, title: e.target.value })}
+                      className="flex-1 px-3 py-2 rounded text-sm outline-none"
+                      style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                    />
+                    <input
+                      placeholder="Client (optional)"
+                      value={editTaskDraft.client}
+                      onChange={(e) => setEditTaskDraft({ ...editTaskDraft, client: e.target.value })}
+                      list="known-client-names"
+                      className="sm:w-48 px-3 py-2 rounded text-sm outline-none"
+                      style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                    />
+                    <div className="flex gap-2">
+                      <button onClick={saveEditTask} className="flex-1 flex items-center justify-center gap-1 px-4 py-2 rounded text-sm font-medium" style={{ background: "#2F6B4F", color: "#F5F1E8" }}>
+                        <Save size={14} /> Save
+                      </button>
+                      <button onClick={cancelEditTask} className="flex-1 px-4 py-2 rounded text-sm font-medium" style={{ background: "#1C2B4512", color: "#1C2B45" }}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    key={t.id}
+                    className="ledger-row flex items-center gap-3 pl-3 pr-4 py-3 rounded-r-md"
+                    style={{ background: "#FFFDF8" }}
+                  >
+                    <button onClick={() => toggleTask(t.id)}>
+                      {t.done ? <CheckCircle2 size={20} color="#2F6B4F" /> : <Circle size={20} color="#1C2B4555" />}
+                    </button>
+                    <div className="flex-1 min-w-0">
+                      <div className={`text-sm ${t.done ? "line-through" : ""}`} style={{ color: t.done ? "#1C2B4570" : "#1C2B45" }}>
+                        {t.title}
+                      </div>
+                      <div className="text-xs mono mt-0.5" style={{ color: "#1C2B4580" }}>{t.client}</div>
+                    </div>
+                    {!t.done && daysLeft(t.due) < 0 && <AlertTriangle size={16} color="#A63D2F" />}
+                    <button
+                      onClick={() => startEditTask(t)}
+                      className="flex items-center gap-1 text-xs mono px-2.5 py-1.5 rounded-full flex-shrink-0"
+                      style={{ background: "#B8892B18", color: "#B8892B" }}
+                    >
+                      <Pencil size={12} /> Edit
+                    </button>
+                    <button
+                      onClick={() => deleteTask(t.id)}
+                      className="flex items-center gap-1 text-xs mono px-2.5 py-1.5 rounded-full flex-shrink-0"
+                      style={{ background: "#A63D2F18", color: "#A63D2F" }}
+                    >
+                      <Trash2 size={12} /> Delete
+                    </button>
+                  </div>
+                )
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* RETURNS CALENDAR */}
+        {tab === "returns" && (
+          <section>
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <h2 className="disp text-lg font-semibold">Client-wise returns</h2>
+              <button
+                onClick={() => setShowAddReturn((v) => !v)}
+                className="flex items-center gap-1 text-xs mono px-3 py-1.5 rounded-full"
+                style={{ background: "#2F6B4F", color: "#F5F1E8" }}
+              >
+                <Plus size={12} /> Add return
+              </button>
+            </div>
+
+            <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
+              {types.map((ty) => (
+                <button
+                  key={ty}
+                  onClick={() => setFilterType(ty)}
+                  className="px-3 py-1 text-xs mono rounded-full whitespace-nowrap"
+                  style={
+                    filterType === ty
+                      ? { background: "#B8892B", color: "#F5F1E8" }
+                      : { background: "#1C2B4512", color: "#1C2B45" }
+                  }
+                >
+                  {ty}
+                </button>
+              ))}
+            </div>
+
+            {showAddReturn && (
+              <div className="mb-4 p-4 rounded-lg grid grid-cols-1 sm:grid-cols-5 gap-2" style={{ background: "#FFFDF8", border: "1px solid #1C2B4518" }}>
+                <input
+                  placeholder="Client name"
+                  value={newReturn.client}
+                  onChange={(e) => setNewReturn({ ...newReturn, client: e.target.value })}
+                  list="known-client-names"
+                  className="sm:col-span-2 px-3 py-2 rounded text-sm outline-none"
+                  style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                />
+                <select
+                  value={newReturn.type}
+                  onChange={(e) => setNewReturn({ ...newReturn, type: e.target.value })}
+                  className="px-3 py-2 rounded text-sm outline-none"
+                  style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                >
+                  {["GSTR-3B", "GSTR-1", "GSTR-9", "GSTR-9C", "TDS 24Q", "TDS 26Q", "ITR-1", "ITR-2", "ITR-3", "ITR-4", "ITR-5", "ITR-6", "ITR-7"].map((o) => (
+                    <option key={o} value={o}>{o}</option>
+                  ))}
+                </select>
+                <input
+                  type="date"
+                  value={newReturn.due}
+                  onChange={(e) => setNewReturn({ ...newReturn, due: e.target.value })}
+                  className="px-3 py-2 rounded text-sm outline-none"
+                  style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                />
+                <input
+                  placeholder="Filed by (e.g. KS)"
+                  value={newReturn.filedBy}
+                  onChange={(e) => setNewReturn({ ...newReturn, filedBy: e.target.value.toUpperCase() })}
+                  list="known-staff-codes"
+                  maxLength={6}
+                  className="px-3 py-2 rounded text-sm mono outline-none uppercase"
+                  style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                />
+                <input
+                  placeholder="Verified by (e.g. DD)"
+                  value={newReturn.verifiedBy}
+                  onChange={(e) => setNewReturn({ ...newReturn, verifiedBy: e.target.value.toUpperCase() })}
+                  list="known-staff-codes"
+                  maxLength={6}
+                  className="px-3 py-2 rounded text-sm mono outline-none uppercase"
+                  style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                />
+                <button onClick={addReturn} className="px-4 py-2 rounded text-sm font-medium" style={{ background: "#1C2B45", color: "#F5F1E8" }}>
+                  Save
+                </button>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              {sortedReturns.map((r) =>
+                editingReturnId === r.id ? (
+                  <div key={r.id} className="p-4 rounded-lg grid grid-cols-1 sm:grid-cols-5 gap-2" style={{ background: "#FFFDF8", border: "2px solid #B8892B" }}>
+                    <div className="sm:col-span-5 flex items-center gap-2 text-xs font-medium mono" style={{ color: "#B8892B" }}>
+                      <Pencil size={12} /> Editing return
+                    </div>
+                    <input
+                      placeholder="Client name"
+                      value={editReturnDraft.client}
+                      onChange={(e) => setEditReturnDraft({ ...editReturnDraft, client: e.target.value })}
+                      list="known-client-names"
+                      className="sm:col-span-2 px-3 py-2 rounded text-sm outline-none"
+                      style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                    />
+                    <select
+                      value={editReturnDraft.type}
+                      onChange={(e) => setEditReturnDraft({ ...editReturnDraft, type: e.target.value })}
+                      className="px-3 py-2 rounded text-sm outline-none"
+                      style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                    >
+                      {["GSTR-3B", "GSTR-1", "GSTR-9", "GSTR-9C", "TDS 24Q", "TDS 26Q", "ITR-1", "ITR-2", "ITR-3", "ITR-4", "ITR-5", "ITR-6", "ITR-7"].map((o) => (
+                        <option key={o} value={o}>{o}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="date"
+                      value={editReturnDraft.due}
+                      onChange={(e) => setEditReturnDraft({ ...editReturnDraft, due: e.target.value })}
+                      className="px-3 py-2 rounded text-sm outline-none"
+                      style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                    />
+                    <input
+                      placeholder="Filed by (e.g. KS)"
+                      value={editReturnDraft.filedBy}
+                      onChange={(e) => setEditReturnDraft({ ...editReturnDraft, filedBy: e.target.value.toUpperCase() })}
+                      list="known-staff-codes"
+                      maxLength={6}
+                      className="px-3 py-2 rounded text-sm mono outline-none uppercase"
+                      style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                    />
+                    <input
+                      placeholder="Verified by (e.g. DD)"
+                      value={editReturnDraft.verifiedBy}
+                      onChange={(e) => setEditReturnDraft({ ...editReturnDraft, verifiedBy: e.target.value.toUpperCase() })}
+                      list="known-staff-codes"
+                      maxLength={6}
+                      className="px-3 py-2 rounded text-sm mono outline-none uppercase"
+                      style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                    />
+                    <div className="sm:col-span-5 flex gap-2">
+                      <button onClick={saveEditReturn} className="flex-1 flex items-center justify-center gap-1 px-4 py-2 rounded text-sm font-medium" style={{ background: "#2F6B4F", color: "#F5F1E8" }}>
+                        <Save size={14} /> Save changes
+                      </button>
+                      <button onClick={cancelEditReturn} className="flex-1 px-4 py-2 rounded text-sm font-medium" style={{ background: "#1C2B4512", color: "#1C2B45" }}>
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    key={r.id}
+                    className="ledger-row flex items-center gap-3 pl-3 pr-4 py-3 rounded-r-md"
+                    style={{ background: "#FFFDF8" }}
+                  >
+                    <div
+                      className="w-2 h-2 rounded-full flex-shrink-0"
+                      style={{ background: typeColors[r.type] || "#1C2B45" }}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium truncate">{r.client}</div>
+                      <div className="text-xs mono mt-0.5" style={{ color: "#1C2B4580" }}>
+                        {r.type} · {r.period} · due {fmt(new Date(r.due))}
+                        {(r.filedBy || r.verifiedBy) && (
+                          <>
+                            {" · "}
+                            {r.filedBy && <span>Filed: {r.filedBy}</span>}
+                            {r.filedBy && r.verifiedBy && " / "}
+                            {r.verifiedBy && <span>Verified: {r.verifiedBy}</span>}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    <StatusStamp status={r.status} due={r.due} />
+                    <button onClick={() => toggleReturnStatus(r.id)} title="Toggle filed status">
+                      <ChevronRight size={16} color="#1C2B4560" />
+                    </button>
+                    <button
+                      onClick={() => startEditReturn(r)}
+                      className="flex items-center gap-1 text-xs mono px-2.5 py-1.5 rounded-full flex-shrink-0"
+                      style={{ background: "#B8892B18", color: "#B8892B" }}
+                    >
+                      <Pencil size={12} /> Edit
+                    </button>
+                    <button
+                      onClick={() => deleteReturn(r.id)}
+                      className="flex items-center gap-1 text-xs mono px-2.5 py-1.5 rounded-full flex-shrink-0"
+                      style={{ background: "#A63D2F18", color: "#A63D2F" }}
+                    >
+                      <Trash2 size={12} /> Delete
+                    </button>
+                  </div>
+                )
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* SITE VISITS */}
+        {tab === "visits" && (
+          <section>
+            <h2 className="disp text-lg font-semibold mb-1">Site visits</h2>
+            <p className="text-sm mb-4" style={{ color: "#1C2B4599" }}>
+              Set how often each client should be visited, log every visit with details of what was
+              discussed, and see who's falling behind their target.
+            </p>
+
+            {/* log a visit */}
+            <div className="mb-6 p-4 rounded-lg" style={{ background: "#FFFDF8", border: "1px solid #1C2B4518" }}>
+              <div className="text-sm font-medium mb-2">Log a visit</div>
+              {clients.length === 0 ? (
+                <div className="text-xs" style={{ color: "#1C2B4599" }}>Add a client first, in the Clients tab.</div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <select
+                      value={visitDraft.clientId}
+                      onChange={(e) => setVisitDraft({ ...visitDraft, clientId: e.target.value })}
+                      className="px-3 py-2 rounded text-sm outline-none"
+                      style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                    >
+                      <option value="">Select client…</option>
+                      {clients.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="date"
+                      value={visitDraft.date ? visitDraft.date.slice(0, 10) : ""}
+                      onChange={(e) => setVisitDraft({ ...visitDraft, date: e.target.value })}
+                      className="px-3 py-2 rounded text-sm outline-none"
+                      style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                    />
+                  </div>
+                  <div className="flex gap-2 items-start">
+                    <textarea
+                      placeholder="What was discussed — sale/purchase, GST issues, documents collected…"
+                      value={visitDraft.note}
+                      onChange={(e) => setVisitDraft({ ...visitDraft, note: e.target.value })}
+                      rows={3}
+                      className="flex-1 px-3 py-2 rounded text-sm outline-none resize-none"
+                      style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                    />
+                    <button
+                      onClick={recording ? stopRecording : startRecording}
+                      className="p-2.5 rounded-full flex-shrink-0"
+                      style={{ background: recording ? "#A63D2F" : "#1C2B45" }}
+                      title={recording ? "Stop dictation" : "Dictate note by voice"}
+                    >
+                      {recording ? <MicOff size={16} color="#F5F1E8" /> : <Mic size={16} color="#F5F1E8" />}
+                    </button>
+                  </div>
+                  {micUnavailable && (
+                    <div className="text-xs" style={{ color: "#A63D2F" }}>
+                      Voice input isn't available in this browser/preview — type the note instead.
+                    </div>
+                  )}
+                  {recording && (
+                    <div className="text-xs mono" style={{ color: "#A63D2F" }}>● listening…</div>
+                  )}
+                  <button
+                    onClick={logVisit}
+                    className="px-4 py-2 rounded text-sm font-medium"
+                    style={{ background: "#2F6B4F", color: "#F5F1E8" }}
+                  >
+                    Save visit
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* visit report */}
+            {clients.length > 0 && (
+              <>
+                <div className="text-sm font-medium mb-2">Visit report</div>
+                <div className="space-y-2 mb-6">
+                  {clients.map((c) => {
+                    const { monthTarget, yearTarget } = targetForPeriod(c);
+                    const mVisits = visitsThisMonth(c.id);
+                    const yVisits = visitsThisYear(c.id);
+                    const onTrackMonth = monthTarget === null || mVisits >= monthTarget;
+                    const onTrackYear = yVisits >= Math.round((yearTarget * (today.getMonth() + 1)) / 12);
+                    return (
+                      <div key={c.id} className="ledger-row rounded-r-md pl-3 pr-4 py-3" style={{ background: "#FFFDF8" }}>
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <MapPin size={15} color="#1C2B4570" className="flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium">{c.name}</div>
+                            <div className="text-xs mono mt-0.5" style={{ color: "#1C2B4580" }}>
+                              target {visitTargetLabel(c.visitCount, c.visitPer)}
+                            </div>
+                          </div>
+                          {monthTarget !== null && (
+                            <Stamp_ tone={onTrackMonth ? "filed" : "overdue"}>
+                              {mVisits}/{monthTarget} this month
+                            </Stamp_>
+                          )}
+                          <Stamp_ tone={onTrackYear ? "filed" : "soon"}>
+                            {yVisits}/{yearTarget} this year
+                          </Stamp_>
+                        </div>
+                        <div className="mt-2 ml-6 flex items-center gap-2">
+                          <span className="text-xs whitespace-nowrap" style={{ color: "#1C2B4599" }}>Visit every</span>
+                          <input
+                            type="number"
+                            min="1"
+                            value={c.visitCount}
+                            onChange={(e) => {
+                              const val = e.target.value === "" ? "" : Math.max(1, Number(e.target.value));
+                              updateVisitTarget(c.id, val, c.visitPer);
+                            }}
+                            className="w-14 px-2 py-1 rounded text-xs mono outline-none text-center"
+                            style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                          />
+                          <select
+                            value={c.visitPer}
+                            onChange={(e) => updateVisitTarget(c.id, c.visitCount, e.target.value)}
+                            className="px-2 py-1 rounded text-xs outline-none"
+                            style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                          >
+                            <option value="days">day(s)</option>
+                            <option value="month">time(s) / month</option>
+                            <option value="year">time(s) / year</option>
+                          </select>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            {/* recent visits */}
+            {visits.length > 0 && (
+              <div>
+                <div className="text-sm font-medium mb-2">Recent visits</div>
+                <div className="space-y-1.5">
+                  {visits.slice(0, 15).map((v) =>
+                    editingVisitId === v.id ? (
+                      <div key={v.id} className="p-3 rounded-lg" style={{ background: "#FFFDF8", border: "2px solid #B8892B" }}>
+                        <div className="text-xs font-medium mono mb-2" style={{ color: "#B8892B" }}>Editing visit — {v.clientName}</div>
+                        <input
+                          type="date"
+                          value={editVisitDraft.date}
+                          onChange={(e) => setEditVisitDraft({ ...editVisitDraft, date: e.target.value })}
+                          className="mb-2 px-3 py-1.5 rounded text-xs outline-none"
+                          style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                        />
+                        <textarea
+                          value={editVisitDraft.note}
+                          onChange={(e) => setEditVisitDraft({ ...editVisitDraft, note: e.target.value })}
+                          rows={2}
+                          className="w-full px-3 py-1.5 rounded text-xs outline-none resize-none"
+                          style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                        />
+                        <div className="flex gap-2 mt-2">
+                          <button onClick={saveEditVisit} className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded text-xs font-medium" style={{ background: "#2F6B4F", color: "#F5F1E8" }}>
+                            <Save size={12} /> Save
+                          </button>
+                          <button onClick={cancelEditVisit} className="flex-1 px-3 py-1.5 rounded text-xs font-medium" style={{ background: "#1C2B4512", color: "#1C2B45" }}>
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div key={v.id} className="flex items-start gap-2 pl-3 py-2 text-xs" style={{ borderLeft: "2px dashed #1C2B4530" }}>
+                        <div className="flex-1">
+                          <span className="font-medium">{v.clientName}</span>{" "}
+                          <span className="mono" style={{ color: "#1C2B4580" }}>{fmt(new Date(v.date))}</span>
+                          <div style={{ color: "#1C2B4599" }}>{v.note}</div>
+                        </div>
+                        <button
+                          onClick={() => startEditVisit(v)}
+                          className="flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0"
+                          style={{ background: "#B8892B18", color: "#B8892B" }}
+                          title="Edit visit"
+                        >
+                          <Pencil size={11} />
+                        </button>
+                        <button
+                          onClick={() => deleteVisit(v.id)}
+                          className="flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0"
+                          style={{ background: "#A63D2F18", color: "#A63D2F" }}
+                          title="Delete visit"
+                        >
+                          <Trash2 size={11} />
+                        </button>
+                      </div>
+                    )
+                  )}
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* CLIENT CHECK-INS */}
+        {tab === "checkins" && (
+          <section>
+            <h2 className="disp text-lg font-semibold mb-1">Client check-ins</h2>
+            <p className="text-sm mb-4" style={{ color: "#1C2B4599" }}>
+              Tick a client once you've discussed it. Untouched clients carry over until you tick them.
+              The list clears itself at the start of the next period.
+            </p>
+
+            <div className="flex gap-1 mb-4">
+              {[
+                { key: "monthly", label: `Monthly · ${monthLabel(today)}` },
+                { key: "quarterly", label: `Quarterly · ${quarterLabel(today)}` },
+              ].map((m) => (
+                <button
+                  key={m.key}
+                  onClick={() => setCheckinMode(m.key)}
+                  className="px-3 py-1.5 text-xs mono rounded-full whitespace-nowrap"
+                  style={
+                    checkinMode === m.key
+                      ? { background: "#B8892B", color: "#F5F1E8" }
+                      : { background: "#1C2B4512", color: "#1C2B45" }
+                  }
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+
+            {clients.length === 0 ? (
+              <div className="p-6 rounded-lg text-sm text-center" style={{ background: "#FFFDF8", border: "1px dashed #1C2B4530", color: "#1C2B4599" }}>
+                No clients yet. Add clients in the Clients tab to start checking them off.
+              </div>
+            ) : (
+              <>
+                <div className="text-xs mono mb-2" style={{ color: "#1C2B4599" }}>
+                  {remainingClients.length} of {clients.length} remaining this {checkinMode === "monthly" ? "month" : "quarter"}
+                </div>
+                <div className="space-y-2">
+                  {clients.map((c) => {
+                    const done = !!currentTicks[c.id];
+                    return (
+                      <div key={c.id} className="ledger-row rounded-r-md pl-3 pr-4 py-3" style={{ background: "#FFFDF8" }}>
+                        <div className="flex items-center gap-3">
+                          <button onClick={() => toggleCheckin(c.id)}>
+                            {done ? <CheckCircle2 size={20} color="#2F6B4F" /> : <Circle size={20} color="#1C2B4555" />}
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            <div className={`text-sm font-medium ${done ? "line-through" : ""}`} style={{ color: done ? "#1C2B4570" : "#1C2B45" }}>
+                              {c.name}
+                            </div>
+                            <div className="text-xs mono mt-0.5" style={{ color: "#1C2B4580" }}>
+                              {c.gstin || "no GSTIN"} · {c.mobile || "no mobile"}
+                            </div>
+                          </div>
+                          {done && <Stamp_ tone="filed">Done</Stamp_>}
+                        </div>
+                        <div className="flex items-center gap-2 mt-2 ml-8">
+                          <input
+                            placeholder="Note: sale/purchase or GST issue discussed…"
+                            value={noteDraft[c.id] || ""}
+                            onChange={(e) => setNoteDraft((d0) => ({ ...d0, [c.id]: e.target.value }))}
+                            onKeyDown={(e) => e.key === "Enter" && addNote(c)}
+                            className="flex-1 px-3 py-1.5 rounded text-xs outline-none"
+                            style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                          />
+                          <button onClick={() => addNote(c)} className="p-1.5 rounded flex-shrink-0" style={{ background: "#1C2B4512" }}>
+                            <MessageSquare size={13} color="#1C2B45" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {notes.length > 0 && (
+                  <div className="mt-8">
+                    <h3 className="disp text-base font-semibold mb-2">Discussion log</h3>
+                    <div className="space-y-1.5">
+                      {notes.slice(0, 15).map((n) =>
+                        editingNoteId === n.id ? (
+                          <div key={n.id} className="p-3 rounded-lg" style={{ background: "#FFFDF8", border: "2px solid #B8892B" }}>
+                            <div className="text-xs font-medium mono mb-2" style={{ color: "#B8892B" }}>Editing note — {n.clientName}</div>
+                            <textarea
+                              value={editNoteDraft}
+                              onChange={(e) => setEditNoteDraft(e.target.value)}
+                              rows={2}
+                              className="w-full px-3 py-1.5 rounded text-xs outline-none resize-none"
+                              style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                            />
+                            <div className="flex gap-2 mt-2">
+                              <button onClick={saveEditNote} className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 rounded text-xs font-medium" style={{ background: "#2F6B4F", color: "#F5F1E8" }}>
+                                <Save size={12} /> Save
+                              </button>
+                              <button onClick={cancelEditNote} className="flex-1 px-3 py-1.5 rounded text-xs font-medium" style={{ background: "#1C2B4512", color: "#1C2B45" }}>
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div key={n.id} className="flex items-start gap-2 pl-3 py-2 text-xs" style={{ borderLeft: "2px dashed #1C2B4530" }}>
+                            <div className="flex-1">
+                              <span className="font-medium">{n.clientName}</span>{" "}
+                              <span className="mono" style={{ color: "#1C2B4580" }}>{fmt(new Date(n.date))}</span>
+                              <div style={{ color: "#1C2B4599" }}>{n.note}</div>
+                            </div>
+                            <button
+                              onClick={() => startEditNote(n)}
+                              className="flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0"
+                              style={{ background: "#B8892B18", color: "#B8892B" }}
+                              title="Edit note"
+                            >
+                              <Pencil size={11} />
+                            </button>
+                            <button
+                              onClick={() => deleteNote(n.id)}
+                              className="flex items-center gap-1 px-2 py-1 rounded-full flex-shrink-0"
+                              style={{ background: "#A63D2F18", color: "#A63D2F" }}
+                              title="Delete note"
+                            >
+                              <Trash2 size={11} />
+                            </button>
+                          </div>
+                        )
+                      )}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </section>
+        )}
+
+        {/* CLIENTS */}
+        {tab === "clients" && (
+          <section>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="disp text-lg font-semibold">Clients</h2>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={downloadExcel}
+                  className="flex items-center gap-1 text-xs mono px-3 py-1.5 rounded-full"
+                  style={{ background: "#1C2B4512", color: "#1C2B45" }}
+                >
+                  <Download size={12} /> Download Excel
+                </button>
+                <button
+                  onClick={() => {
+                    setShowAddClient((v) => !v);
+                    setEditingClientId(null);
+                    setEditClientDraft(null);
+                  }}
+                  className="flex items-center gap-1 text-xs mono px-3 py-1.5 rounded-full"
+                  style={{ background: "#2F6B4F", color: "#F5F1E8" }}
+                >
+                  <Plus size={12} /> Add client
+                </button>
+              </div>
+            </div>
+
+            {clientSavedMsg && (
+              <div
+                className="mb-4 px-4 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2"
+                style={{ background: "#2F6B4F18", border: "1px solid #2F6B4F", color: "#2F6B4F" }}
+              >
+                <CheckCircle2 size={16} /> {clientSavedMsg}
+              </div>
+            )}
+
+            {showAddClient && (
+              <div className="mb-4 p-4 rounded-lg grid grid-cols-1 sm:grid-cols-2 gap-2" style={{ background: "#FFFDF8", border: "1px solid #1C2B4518" }}>
+                <input
+                  placeholder="Client / firm name"
+                  value={newClient.name}
+                  onChange={(e) => setNewClient({ ...newClient, name: e.target.value })}
+                  className="sm:col-span-2 px-3 py-2 rounded text-sm outline-none"
+                  style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                />
+                <input
+                  placeholder="GSTIN (15 char)"
+                  value={newClient.gstin}
+                  maxLength={15}
+                  onChange={(e) => setNewClient({ ...newClient, gstin: e.target.value.toUpperCase() })}
+                  className="px-3 py-2 rounded text-sm mono outline-none"
+                  style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                />
+                <input
+                  placeholder="PAN (10 char)"
+                  value={newClient.pan}
+                  maxLength={10}
+                  onChange={(e) => setNewClient({ ...newClient, pan: e.target.value.toUpperCase() })}
+                  className="px-3 py-2 rounded text-sm mono outline-none"
+                  style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                />
+                <input
+                  placeholder="Mobile number"
+                  value={newClient.mobile}
+                  maxLength={10}
+                  onChange={(e) => setNewClient({ ...newClient, mobile: e.target.value.replace(/\D/g, "") })}
+                  className="px-3 py-2 rounded text-sm mono outline-none"
+                  style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                />
+                <input
+                  placeholder="Email address"
+                  type="email"
+                  value={newClient.email}
+                  onChange={(e) => setNewClient({ ...newClient, email: e.target.value })}
+                  className="px-3 py-2 rounded text-sm mono outline-none"
+                  style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                />
+                <div className="sm:col-span-2 flex items-center gap-2">
+                  <span className="text-xs whitespace-nowrap" style={{ color: "#1C2B4599" }}>Visit every</span>
+                  <input
+                    type="number"
+                    min="1"
+                    value={newClient.visitCount}
+                    onChange={(e) => setNewClient({ ...newClient, visitCount: e.target.value === "" ? "" : Math.max(1, Number(e.target.value)) })}
+                    className="w-16 px-2 py-2 rounded text-sm mono outline-none text-center"
+                    style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                  />
+                  <select
+                    value={newClient.visitPer}
+                    onChange={(e) => setNewClient({ ...newClient, visitPer: e.target.value })}
+                    className="flex-1 px-3 py-2 rounded text-sm outline-none"
+                    style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                  >
+                    <option value="days">day(s)</option>
+                    <option value="month">time(s) / month</option>
+                    <option value="year">time(s) / year</option>
+                  </select>
+                </div>
+                <button onClick={addClient} className="px-4 py-2 rounded text-sm font-medium sm:col-span-2" style={{ background: "#1C2B45", color: "#F5F1E8" }}>
+                  Save client
+                </button>
+              </div>
+            )}
+
+            {clients.length === 0 ? (
+              <div className="p-6 rounded-lg text-sm text-center" style={{ background: "#FFFDF8", border: "1px dashed #1C2B4530", color: "#1C2B4599" }}>
+                No clients added yet — use "Add client" above to build your roster.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {clients.map((c) =>
+                  editingClientId === c.id ? (
+                    <div
+                      key={c.id}
+                      className="p-4 rounded-lg grid grid-cols-1 sm:grid-cols-2 gap-2"
+                      style={{ background: "#FFFDF8", border: "2px solid #B8892B" }}
+                    >
+                      <div className="sm:col-span-2 flex items-center gap-2 text-xs font-medium mono" style={{ color: "#B8892B" }}>
+                        <Pencil size={12} /> Editing: {c.name}
+                      </div>
+                      <input
+                        placeholder="Client / firm name"
+                        value={editClientDraft.name}
+                        onChange={(e) => setEditClientDraft({ ...editClientDraft, name: e.target.value })}
+                        className="sm:col-span-2 px-3 py-2 rounded text-sm outline-none"
+                        style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                      />
+                      <input
+                        placeholder="GSTIN (15 char)"
+                        value={editClientDraft.gstin}
+                        maxLength={15}
+                        onChange={(e) => setEditClientDraft({ ...editClientDraft, gstin: e.target.value.toUpperCase() })}
+                        className="px-3 py-2 rounded text-sm mono outline-none"
+                        style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                      />
+                      <input
+                        placeholder="PAN (10 char)"
+                        value={editClientDraft.pan}
+                        maxLength={10}
+                        onChange={(e) => setEditClientDraft({ ...editClientDraft, pan: e.target.value.toUpperCase() })}
+                        className="px-3 py-2 rounded text-sm mono outline-none"
+                        style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                      />
+                      <input
+                        placeholder="Mobile number"
+                        value={editClientDraft.mobile}
+                        maxLength={10}
+                        onChange={(e) => setEditClientDraft({ ...editClientDraft, mobile: e.target.value.replace(/\D/g, "") })}
+                        className="px-3 py-2 rounded text-sm mono outline-none"
+                        style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                      />
+                      <input
+                        placeholder="Email address"
+                        type="email"
+                        value={editClientDraft.email}
+                        onChange={(e) => setEditClientDraft({ ...editClientDraft, email: e.target.value })}
+                        className="px-3 py-2 rounded text-sm mono outline-none"
+                        style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                      />
+                      <div className="sm:col-span-2 flex items-center gap-2">
+                        <span className="text-xs whitespace-nowrap" style={{ color: "#1C2B4599" }}>Visit every</span>
+                        <input
+                          type="number"
+                          min="1"
+                          value={editClientDraft.visitCount}
+                          onChange={(e) => setEditClientDraft({ ...editClientDraft, visitCount: e.target.value === "" ? "" : Math.max(1, Number(e.target.value)) })}
+                          className="w-16 px-2 py-2 rounded text-sm mono outline-none text-center"
+                          style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                        />
+                        <select
+                          value={editClientDraft.visitPer}
+                          onChange={(e) => setEditClientDraft({ ...editClientDraft, visitPer: e.target.value })}
+                          className="flex-1 px-3 py-2 rounded text-sm outline-none"
+                          style={{ border: "1px solid #1C2B4530", background: "#F5F1E8" }}
+                        >
+                          <option value="days">day(s)</option>
+                          <option value="month">time(s) / month</option>
+                          <option value="year">time(s) / year</option>
+                        </select>
+                      </div>
+                      <div className="sm:col-span-2 flex gap-2">
+                        <button onClick={saveEditClient} className="flex-1 flex items-center justify-center gap-1 px-4 py-2 rounded text-sm font-medium" style={{ background: "#2F6B4F", color: "#F5F1E8" }}>
+                          <Save size={14} /> Save changes
+                        </button>
+                        <button onClick={cancelEditClient} className="flex-1 px-4 py-2 rounded text-sm font-medium" style={{ background: "#1C2B4512", color: "#1C2B45" }}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      key={c.id}
+                      className="ledger-row flex items-center gap-3 pl-3 pr-4 py-3 rounded-r-md"
+                      style={{ background: "#FFFDF8" }}
+                    >
+                      <div className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: "#1C2B4512" }}>
+                        <Users size={15} color="#1C2B45" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium truncate">{c.name}</div>
+                        <div className="text-xs mono mt-0.5 flex flex-wrap gap-x-3" style={{ color: "#1C2B4580" }}>
+                          <span>GSTIN: {c.gstin || "—"}</span>
+                          <span>PAN: {c.pan || "—"}</span>
+                          <span className="flex items-center gap-1"><Phone size={10} />{c.mobile || "—"}</span>
+                          <span>{c.email || "—"}</span>
+                        </div>
+                      </div>
+                      {c.email && (
+                        <a href={mailtoLink(c)} title="Email this client">
+                          <Send size={15} color="#1C2B4580" />
+                        </a>
+                      )}
+                      <button
+                        onClick={() => startEditClient(c)}
+                        title="Edit client"
+                        className="flex items-center gap-1 text-xs mono px-2.5 py-1.5 rounded-full flex-shrink-0"
+                        style={{ background: "#B8892B18", color: "#B8892B" }}
+                      >
+                        <Pencil size={12} /> Edit
+                      </button>
+                      <button
+                        onClick={() => deleteClient(c.id)}
+                        title="Delete client"
+                        className="flex items-center gap-1 text-xs mono px-2.5 py-1.5 rounded-full flex-shrink-0"
+                        style={{ background: "#A63D2F18", color: "#A63D2F" }}
+                      >
+                        <Trash2 size={12} /> Delete
+                      </button>
+                    </div>
+                  )
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* CONNECTIONS */}
+        {tab === "connections" && (
+          <section>
+            <h2 className="disp text-lg font-semibold mb-1">Connections</h2>
+            <p className="text-sm mb-5" style={{ color: "#1C2B4599" }}>
+              This demo shows the intended flow. Wiring these up for real needs a small backend: Tally's
+              ODBC/XML export, an IMAP/Graph mailbox connection, and an Excel import parser.
+            </p>
+            <div className="space-y-3">
+              {[
+                { key: "mail", icon: Mail, name: "Mail", desc: "Sends return & task reminders to clients automatically" },
+                { key: "excel", icon: FileSpreadsheet, name: "Excel", desc: "Bulk-import client due dates and reconcile working files" },
+                { key: "tally", icon: Database, name: "Tally", desc: "Pulls voucher & ledger data to flag pending entries" },
+              ].map((c) => (
+                <div key={c.key} className="flex items-center gap-4 p-4 rounded-lg" style={{ background: "#FFFDF8", border: "1px solid #1C2B4518" }}>
+                  <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: "#1C2B4512" }}>
+                    <c.icon size={18} color="#1C2B45" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium">{c.name}</div>
+                    <div className="text-xs mt-0.5" style={{ color: "#1C2B4580" }}>{c.desc}</div>
+                    <div className="text-xs mono mt-1" style={{ color: "#2F6B4F" }}>
+                      ● Connected · last synced {connections[c.key].last}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => sync(c.key)}
+                    disabled={connections[c.key].syncing}
+                    className="flex items-center gap-1 text-xs mono px-3 py-1.5 rounded-full flex-shrink-0"
+                    style={{ background: "#1C2B45", color: "#F5F1E8" }}
+                  >
+                    <RefreshCw size={12} className={connections[c.key].syncing ? "animate-spin" : ""} />
+                    {connections[c.key].syncing ? "Syncing" : "Sync now"}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(KhataDesk));
+
+</script>
+
+<script>
+(function () {
+  var src = document.getElementById('khatadesk-source').textContent;
+  var out = Babel.transform(src, {
+    presets: [["react", { runtime: "classic" }]]
+  }).code;
+  (0, eval)(out);
+})();
+</script>
+
+<!-- Small floating status badge, kept outside React so it works no matter
+     what the app's own UI looks like. Shows whether this view is syncing
+     through the artifact's built-in cloud storage (automatic when opened
+     as a Claude artifact while signed in) or just saving to this device. -->
+<div id="khatadesk-sync-badge" style="position:fixed;bottom:14px;right:14px;z-index:99999;font-family:Inter,sans-serif;font-size:12px;">
+  <div id="khatadesk-sync-btn" style="background:#1C2B45;color:#F5F1E8;border:none;border-radius:999px;padding:8px 14px;box-shadow:0 2px 8px rgba(0,0,0,.25);display:flex;align-items:center;gap:6px;">
+    <span id="khatadesk-sync-dot" style="width:8px;height:8px;border-radius:50%;background:#999;display:inline-block;"></span>
+    <span id="khatadesk-sync-label">Checking sync…</span>
+  </div>
+</div>
+<script>
+(function () {
+  function setBadge(on) {
+    document.getElementById('khatadesk-sync-dot').style.background = on ? '#2E7D32' : '#999';
+    document.getElementById('khatadesk-sync-label').textContent = on
+      ? 'Synced across devices'
+      : 'Local only (set up cloud sync — see SYNC-SETUP.txt)';
+  }
+  (window.KhataDeskSync ? window.KhataDeskSync.isAvailable() : Promise.resolve(false)).then(setBadge);
+})();
+</script>
+</body>
+</html>
